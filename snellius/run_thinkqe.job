@@ -77,5 +77,7 @@ python thinkqe.py \
     --seed ${SEED} \
     ${EXTRA_ARR[@]+"${EXTRA_ARR[@]}"}
 
-echo "=== Final metrics (round ${NUM_INTERACTION}) ==="
-cat "$OUT/bm25-aug${NUM_INTERACTION}_result_retrieval.trec.metrics.json"
+# Record the run's extra arguments (read by collect_results.py, e.g. --num_interaction 1)
+echo "$EXTRA" > "$OUT/extra_args.txt"
+echo "=== Final metrics ==="
+cat "$(ls "$OUT"/bm25-aug*_result_retrieval.trec.metrics.json | sort -V | tail -1)"
