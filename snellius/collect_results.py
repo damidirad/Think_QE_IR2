@@ -88,7 +88,7 @@ for model in sorted({m for m, _ in runs}):
                 if ds in runs[(model, s)] and runs[(model, s)][ds]["round"] == 3]
         if len(vals) < 2: continue
         cols = list(zip(*vals))
-        ms = " / ".join(f"{st.mean(c):4.1f}±{st.stdev(c):3.1f}" for c in cols)
+        ms = " / ".join(f"{st.mean(c):4.1f}±{st.stdev(c):4.2f}" for c in cols)
         p = paper(model, ds)
         print(f"  {ds:19s} n={len(vals)}  {ms} | paper {fmt3(p) if ds in ('dl19','dl20') else fmt(p)}")
     per_seed = []
@@ -97,4 +97,4 @@ for model in sorted({m for m, _ in runs}):
         if len(v) == 7: per_seed.append(st.mean(v))
     if len(per_seed) >= 2:
         pb = PAPER.get(model, {}).get("bright")
-        print(f"  {'BRIGHT average':19s} n={len(per_seed)}  {st.mean(per_seed):4.1f}±{st.stdev(per_seed):3.1f} | paper {fmt(st.mean(pb)) if pb else '-'}")
+        print(f"  {'BRIGHT average':19s} n={len(per_seed)}  {st.mean(per_seed):4.1f}±{st.stdev(per_seed):4.2f} | paper {fmt(st.mean(pb)) if pb else '-'}")
