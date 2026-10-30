@@ -6,6 +6,8 @@
 # Options (environment variables):
 #   BATCH=true   one vLLM call per round instead of per query (needs batching.patch applied)
 #   SEED=1       vLLM seed (default 0)
+#   EXTRA='--think_split "</think>"' ETAG=thinksplit   extra thinkqe.py args + a label for the output folder
+#   EXTRA='--no_thinking true --num_interaction 1' ETAG=nothink1r   (ablations; ETAG required with EXTRA)
 #   e.g.  BATCH=true SEED=1 bash snellius/submit_runs.sh deepseek-ai/DeepSeek-R1-Distill-Qwen-14B all
 # Slurm only bills time actually used, so the time limits below are generous on purpose.
 set -euo pipefail
@@ -17,8 +19,9 @@ for d in "${DATASETS[@]}"; do
   case $d in dl19|dl20) T=04:00:00 ;; *) T=08:00:00 ;; esac
   if [ "${BATCH:-false}" = "true" ] && ! grep -q batch_generation thinkqe.py; then
     echo "BATCH=true but batching.patch is not applied (run: git apply snellius/batching.patch)"; exit 1; fi
-  MODEL=$MODEL BATCH=${BATCH:-false} SEED=${SEED:-0} sbatch --export=ALL --time=$T \
-      --job-name="tqe_${d}_$(basename "$MODEL")$([ "${BATCH:-false}" = true ] && echo _b)_s${SEED:-0}" \
+  if [ -n "${EXTRA:-}" ] && [ -z "${ETAG:-}" ]; then echo "Set ETAG (a short label) when using EXTRA"; exit 1; fi
+  MODEL=$MODEL BATCH=${BATCH:-false} SEED=${SEED:-0} EXTRA="${EXTRA:-}" ETAG="${ETAG:-}" sbatch --export=ALL --time=$T \
+      --job-name="tqe_${d}_$(basename "$MODEL")${ETAG:+_$ETAG}$([ "${BATCH:-false}" = true ] && echo _b)_s${SEED:-0}" \
       snellius/run_thinkqe.job "$d"
 done
 squeue -u "$USER"

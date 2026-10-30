@@ -5,7 +5,7 @@ Reads /scratch-shared/$USER/thinkqe/outputs/<dataset>_<model>[__<variant>]/.
 Per run: final-round score vs the paper, plus generations without "</think>\\n" (what
 extract_answer() splits on; in those the whole reasoning trace becomes the expansion).
 Then, per model, mean ± std over all seeds of the batched runs."""
-import json, os, glob, sys, statistics as st
+import json, os, glob, re, sys, statistics as st
 
 OUT = f"/scratch-shared/{os.environ['USER']}/thinkqe/outputs"
 FILTER = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -35,7 +35,7 @@ for run in glob.glob(f"{OUT}/*"):
     if ds is None: continue
     model, _, variant = name[len(ds) + 1:].partition("__")
     variant = variant or "unbatched_s0"
-    if FILTER and FILTER not in model: continue
+    if FILTER and not re.search(FILTER, model): continue
     files = sorted(glob.glob(f"{run}/bm25-aug*_result_retrieval.trec.metrics.json"),
                    key=lambda f: int(f.split("bm25-aug")[1].split("_")[0]))
     rec = {"round": None}
@@ -49,13 +49,16 @@ for run in glob.glob(f"{OUT}/*"):
             m = json.load(open(files[-1]))
         rec["round"] = int(files[-1].split("bm25-aug")[1].split("_")[0])
         rec["vals"] = tuple(m.get(k) for k in KEYS) if ds in ("dl19", "dl20") else (m.get("ndcg@10"),)
-        n = bad = 0
+        n = noclose = nonl = 0
         for f in glob.glob(f"{run}/*.responses.json"):
             try: data = json.load(open(f))
             except (json.JSONDecodeError, OSError): continue   # being written
             for resps in data.values():
-                for r in resps: n += 1; bad += "</think>\n" not in r
-        rec["bad"], rec["n"] = bad, n
+                for r in resps:
+                    n += 1
+                    if "</think>" not in r: noclose += 1      # never finished thinking
+                    elif "</think>\n" not in r: nonl += 1    # closed, no newline: the default split misses it
+        rec["noclose"], rec["nonl"], rec["n"] = noclose, nonl, n
     runs.setdefault((model, variant), {})[ds] = rec
 
 if not runs: print(f"No runs found in {OUT}"); sys.exit()
@@ -70,19 +73,22 @@ for (model, variant) in sorted(runs):
         p = paper(model, ds)
         ours = fmt3(r["vals"]) if ds in ("dl19", "dl20") else fmt(r["vals"][0])
         theirs = fmt3(p) if ds in ("dl19", "dl20") else fmt(p)
-        note = f"round {r['round']}/3" + (f", {r['bad']}/{r['n']} unclosed </think>" if r["bad"] else "")
+        note = f"round {r['round']}/3" + (f", {r['noclose']}/{r['n']} no </think>" if r["noclose"] else "") \
+               + (f", {r['nonl']}/{r['n']} </think> without newline" if r["nonl"] else "")
         print(f"  {ds:19s} ours {ours} | paper {theirs} | {note}")
     done = [recs[d]["vals"][0] for d in BRIGHT if d in recs and recs[d]["round"] == 3]
     if len(done) == 7:
         pb = PAPER.get(model, {}).get("bright")
         print(f"  {'BRIGHT average':19s} ours {fmt(st.mean(done))} | paper {fmt(st.mean(pb)) if pb else '-'}")
 
-# Mean ± std over seeds (batched runs that finished all 3 rounds)
-for model in sorted({m for m, _ in runs}):
-    seeds = [v for (m, v) in runs if m == model and v.startswith("batched_s")]
+# Mean ± std over seeds: runs of the same model and variant that differ only in seed (…_s0, _s1, …)
+groups = {}
+for (m, v) in runs:
+    if re.search(r"_s\d+$", v) and v != "unbatched_s0":
+        groups.setdefault((m, re.sub(r"_s\d+$", "", v)), []).append(v)
+for (model, base), seeds in sorted(groups.items()):
     if len(seeds) < 2: continue
-    print(f"\n== {model}: mean ± std over seeds ({', '.join(sorted(seeds))})")
-    avgs = []
+    print(f"\n== {model} [{base}]: mean ± std over seeds ({', '.join(sorted(seeds))})")
     for ds in ORDER:
         vals = [runs[(model, s)][ds]["vals"] for s in seeds
                 if ds in runs[(model, s)] and runs[(model, s)][ds]["round"] == 3]
@@ -97,4 +103,4 @@ for model in sorted({m for m, _ in runs}):
         if len(v) == 7: per_seed.append(st.mean(v))
     if len(per_seed) >= 2:
         pb = PAPER.get(model, {}).get("bright")
-        print(f"  {'BRIGHT average':19s} n={len(per_seed)}  {st.mean(per_seed):4.1f}±{st.stdev(per_seed):4.2f} | paper {fmt(st.mean(pb)) if pb else '-'}")
+        print(f"  {'BRIGHT average':19s} n={len(per_seed)}  {st.mean(per_seed):5.2f}±{st.stdev(per_seed):4.2f} (per seed: {', '.join(f'{x:.2f}' for x in per_seed)}) | paper {fmt(st.mean(pb)) if pb else '-'}")

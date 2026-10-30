@@ -45,10 +45,15 @@ esac
 
 # Reproduction options (set via submit_runs.sh): batched generation and vLLM seed
 BATCH=${BATCH:-false}; SEED=${SEED:-0}
-TAG=""; [ "$BATCH" = "true" ] && TAG="batched_"
-[ "$BATCH" = "true" ] || [ "$SEED" != "0" ] && TAG="__${TAG}s${SEED}"
+# EXTRA = extra thinkqe.py arguments (ablations, parsing variants); ETAG = short label for them
+EXTRA=${EXTRA:-}; ETAG=${ETAG:-}
+if [ -n "$EXTRA" ] && [ -z "$ETAG" ]; then echo "ERROR: set ETAG when using EXTRA"; exit 1; fi
+TAG=""; [ -n "$ETAG" ] && TAG="${ETAG}_"
+[ "$BATCH" = "true" ] && TAG="${TAG}batched_"
+{ [ "$BATCH" = "true" ] || [ "$SEED" != "0" ] || [ -n "$ETAG" ]; } && TAG="__${TAG}s${SEED}"
+eval "EXTRA_ARR=($EXTRA)"   # keeps quoted values like --think_split "</think>" intact
 OUT=$WORK/outputs/${DATASET}_$(basename "$MODEL")${TAG}
-echo "Dataset=$DATASET  Model=$MODEL  Batch=$BATCH  Seed=$SEED  Output=$OUT"
+echo "Dataset=$DATASET  Model=$MODEL  Batch=$BATCH  Seed=$SEED  Extra=[$EXTRA]  Output=$OUT"
 nvidia-smi
 
 python thinkqe.py \
@@ -69,7 +74,8 @@ python thinkqe.py \
     --write_top_passages \
     --accumulate ${ACCUMULATE} \
     --batch_generation ${BATCH} \
-    --seed ${SEED}
+    --seed ${SEED} \
+    ${EXTRA_ARR[@]+"${EXTRA_ARR[@]}"}
 
 echo "=== Final metrics (round ${NUM_INTERACTION}) ==="
 cat "$OUT/bm25-aug${NUM_INTERACTION}_result_retrieval.trec.metrics.json"
