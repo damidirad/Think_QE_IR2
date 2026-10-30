@@ -37,8 +37,10 @@ def extract_key_sentences(response):
     joint_sentence = " ".join(sentences)
     return joint_sentence
 
+THINK_SPLIT = "</think>\n"  # original behaviour; --think_split can override (added for the reproduction)
+
 def extract_answer(response):
-    return response.split("</think>\n")[-1]
+    return response.split(THINK_SPLIT)[-1]
 
 def extract_expansions(response_list):
     return [extract_answer(response) for response in response_list]
@@ -449,6 +451,7 @@ def main():
     parser.add_argument('--no_thinking', type=lambda x: x.lower() == 'true', default=False, help="No thinking mode for the R1-distill-qwen model")
     parser.add_argument('--num_interaction', type=int, default=3, help="Number of interaction rounds with the corpus")
     parser.add_argument('--batch_generation', type=lambda x: x.lower() == 'true', default=False, help="Generate all queries of a round in one vLLM call (added for the reproduction; default off = original behaviour)")
+    parser.add_argument('--think_split', type=str, default="</think>\n", help="String after which the answer starts (added for the reproduction; default = original behaviour)")
     parser.add_argument('--seed', type=int, default=0, help="vLLM engine seed (added for the reproduction; 0 = vLLM 0.7.x default)")
     args = parser.parse_args()
 
@@ -461,6 +464,8 @@ def main():
         os.makedirs(args.output_dir)  # Create output directory if needed
 
     # generation model
+    global THINK_SPLIT
+    THINK_SPLIT = args.think_split
     openai_api = VLLMCompletion(model_name=args.generation_model, control_thinking=args.no_thinking, seed=args.seed)
 
     # query data
