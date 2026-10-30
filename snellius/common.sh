@@ -8,7 +8,7 @@ export MODEL=${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-14B}   # model used i
 mkdir -p "$WORK" "$HF_HOME" "$PYSERINI_CACHE"
 
 # Qwen3 models need the newer environment
-case "$MODEL" in *Qwen3*) CONDA_ENV=thinkqe_qwen3 ;; *) CONDA_ENV=thinkqe_310 ;; esac
+case "$MODEL" in *R1-Distill*) CONDA_ENV=thinkqe_310 ;; *) CONDA_ENV=thinkqe_qwen3 ;; esac
 
 set +u  # module/conda scripts use unset variables
 module purge
