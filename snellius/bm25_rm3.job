@@ -1,0 +1,14 @@
+#!/bin/bash
+# BM25 and BM25+RM3 baselines, CPU only. Submit from the repo root:
+#   sbatch snellius/bm25_rm3.job
+#SBATCH --job-name=bm25_rm3
+#SBATCH --partition=genoa
+#SBATCH --cpus-per-task=16
+#SBATCH --time=02:00:00
+#SBATCH --output=bm25_rm3_%j.out
+
+set -euo pipefail
+MODEL=deepseek-ai/DeepSeek-R1-Distill-Qwen-14B   # only used to pick the thinkqe_310 env
+source snellius/common.sh
+export HF_HUB_OFFLINE=1
+python snellius/bm25_rm3.py --out_dir "$WORK/outputs/baselines"
