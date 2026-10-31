@@ -171,6 +171,19 @@ MODELS = {"DeepSeek-R1-Distill-Qwen-14B": "batched", "Qwen3-8B": "batched", "Qwe
           "OpenThinker2-7B": "batched", "Phi-4-reasoning": "thinksplit_batched"}
 R1 = "DeepSeek-R1-Distill-Qwen-14B"
 
+# The paper's analysis claims (R1-14B, BRIGHT). In --preset primary each claim is ONE test
+# (all 749 BRIGHT queries pooled) and Holm is applied over exactly these tests: fixed before
+# the seed 1-2 results came in (31 Oct). --preset ablations shows the per-domain detail.
+ABLATION_CLAIMS = [
+    (f"{R1}:batched@1", f"{R1}:nothink1r_batched", BRIGHT, "Thinking vs no thinking (1 round, 2 samples)"),
+    (f"{R1}:batched@1", f"{R1}:par1_batched", BRIGHT, "2 samples vs 1 sample (1 round)"),
+    (f"{R1}:batched@2", f"{R1}:par4_batched", BRIGHT, "4 calls: 2 rounds vs 1 round x 4 samples"),
+    (f"{R1}:batched@3", f"{R1}:par6_batched", BRIGHT, "6 calls: 3 rounds vs 1 round x 6 samples"),
+    (f"{R1}:batched", f"{R1}:noaccum_batched", BRIGHT, "Full vs accumulation off"),
+    (f"{R1}:batched", f"{R1}:nofilter_batched", BRIGHT, "Full vs filter off"),
+    (f"{R1}:batched", f"{R1}:noboth_batched", BRIGHT, "Full vs both off"),
+]
+
 def preset(name):
     """Yields (A, B, datasets, label)."""
     if name == "main":                       # ThinkQE vs BM25 (round 0 of the same runs)
@@ -182,20 +195,19 @@ def preset(name):
         for m, v in MODELS.items():
             if m != R1:
                 yield f"{m}:{v}", f"{R1}:batched", DL + BRIGHT, f"{m} vs R1-14B"
-    elif name == "ablations":                # R1-14B on BRIGHT
-        yield f"{R1}:batched@1", f"{R1}:nothink1r_batched", BRIGHT, "Thinking vs no thinking (1 round, 2 samples)"
-        yield f"{R1}:batched@1", f"{R1}:par1_batched", BRIGHT, "2 samples vs 1 sample (1 round)"
-        yield f"{R1}:batched@2", f"{R1}:par4_batched", BRIGHT, "4 calls: 2 rounds vs 1 round x 4 samples"
-        yield f"{R1}:batched@3", f"{R1}:par6_batched", BRIGHT, "6 calls: 3 rounds vs 1 round x 6 samples"
-        yield f"{R1}:batched", f"{R1}:noaccum_batched", BRIGHT, "Full vs accumulation off"
-        yield f"{R1}:batched", f"{R1}:nofilter_batched", BRIGHT, "Full vs filter off"
-        yield f"{R1}:batched", f"{R1}:noboth_batched", BRIGHT, "Full vs both off"
+    elif name in ("ablations", "primary"):   # R1-14B on BRIGHT
+        yield from ABLATION_CLAIMS
+    elif name == "pairs":                    # every pair of models, BRIGHT
+        import itertools
+        for (ma, va), (mb, vb) in itertools.combinations(MODELS.items(), 2):
+            yield f"{ma}:{va}", f"{mb}:{vb}", BRIGHT, f"{ma} vs {mb}"
     else:
         sys.exit(f"Unknown preset {name}")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--preset", choices=["main", "phi", "models", "ablations"])
+    ap.add_argument("--preset", choices=["main", "phi", "models", "pairs", "ablations", "primary"],
+                    help="primary / pairs: one pooled BRIGHT test per comparison, Holm over those only")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
     ap.add_argument("--datasets", default="all", help="all | dl | bright | comma-separated names")
     args = ap.parse_args()
@@ -210,4 +222,9 @@ if __name__ == "__main__":
     results = []
     for a, b, dss, label in jobs:
         results += compare(a, b, [d for d in dss if d in sel] if args.preset else dss, label)
+    if args.preset in ("primary", "pairs"):
+        # one test per comparison: keep only the pooled BRIGHT row (needs all 7 domains finished)
+        results = [r for r in results if r["ds"] == "BRIGHT pooled"] + \
+                  [dict(label=r["label"], ds="BRIGHT pooled", missing=True) for r in results
+                   if r["ds"] == "biology" and not any(x["label"] == r["label"] and x["ds"] == "BRIGHT pooled" for x in results)]
     print_results(results)
