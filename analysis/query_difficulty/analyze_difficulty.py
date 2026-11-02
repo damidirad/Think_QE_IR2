@@ -6,9 +6,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 
 
-# ============================================================
 # 1. CONFIGURATION
-# ============================================================
+
 
 BASE = Path(__file__).resolve().parent
 RESULTS = BASE / "results"
@@ -19,9 +18,9 @@ FIGURES.mkdir(parents=True, exist_ok=True)
 DATA_FILE = RESULTS / "query_difficulty.csv"
 
 
-# ============================================================
+
 # 2. LOAD VALIDATED QUERY RESULTS
-# ============================================================
+
 
 df = pd.read_csv(DATA_FILE)
 
@@ -39,9 +38,9 @@ if df[required].isna().any().any():
     raise ValueError("Missing values in query difficulty results")
 
 
-# ============================================================
+
 # 3. QUERY DIFFICULTY VS. IMPROVEMENT
-# ============================================================
+
 
 rho, p = spearmanr(
     df["bm25_ndcg10"],
@@ -77,9 +76,8 @@ plt.close(fig)
 print(f"Baseline vs. improvement: rho={rho:.3f}, p={p:.4g}")
 
 
-# ============================================================
 # 4. QUERY LENGTH VS. IMPROVEMENT
-# ============================================================
+
 
 rho_len, p_len = spearmanr(
     df["query_length"],
@@ -115,9 +113,9 @@ plt.close(fig)
 print(f"Length vs. improvement: rho={rho_len:.3f}, p={p_len:.4g}")
 
 
-# ============================================================
+
 # 5. WIN / TIE / LOSS DISTRIBUTION
-# ============================================================
+
 
 counts = (
     df["outcome"]
@@ -150,9 +148,8 @@ fig.savefig(FIGURES / "query_outcomes.png", dpi=200)
 plt.close(fig)
 
 
-# ============================================================
 # 6. SUMMARY
-# ============================================================
+
 
 print("\n--- Summary ---")
 print(f"Queries analyzed: {len(df)}")
