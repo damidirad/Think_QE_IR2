@@ -17,6 +17,7 @@ if [ "${1:-all}" = "all" ]; then DATASETS=(dl19 dl20 "${BRIGHT[@]}"); else DATAS
 
 for d in "${DATASETS[@]}"; do
   case $d in dl19|dl20) T=04:00:00 ;; *) T=08:00:00 ;; esac
+  T=${TIME_LIMIT:-$T}   # optional override, e.g. TIME_LIMIT=01:30:00 (short jobs backfill sooner)
   if [ "${BATCH:-false}" = "true" ] && ! grep -q batch_generation thinkqe.py; then
     echo "BATCH=true but batching.patch is not applied (run: git apply snellius/batching.patch)"; exit 1; fi
   if [ -n "${EXTRA:-}" ] && [ -z "${ETAG:-}" ]; then echo "Set ETAG (a short label) when using EXTRA"; exit 1; fi

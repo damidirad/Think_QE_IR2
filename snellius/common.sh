@@ -8,7 +8,11 @@ export MODEL=${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-14B}   # model used i
 mkdir -p "$WORK" "$HF_HOME" "$PYSERINI_CACHE"
 
 # Qwen3 models need the newer environment
-case "$MODEL" in *R1-Distill*) CONDA_ENV=thinkqe_310 ;; *) CONDA_ENV=thinkqe_qwen3 ;; esac
+case "$MODEL" in
+  *R1-Distill*) CONDA_ENV=thinkqe_310 ;;
+  *Qwen3.8*)    CONDA_ENV=thinkqe_qwen38; export THINKQE_TEXT_ONLY=1 THINKQE_MAX_NUM_SEQS=256 VLLM_USE_FLASHINFER_SAMPLER=0 CUDA_HOME=$HOME/.conda/envs/thinkqe_qwen38/lib/python3.10/site-packages/nvidia/cu13 LD_PRELOAD=/home/scur0900/.conda/envs/thinkqe_qwen38/lib/server/libjsig.so PYTHONFAULTHANDLER=1 ;;   # extension: Qwen3.8 (Aug 2026), current vLLM, text only
+  *)            CONDA_ENV=thinkqe_qwen3 ;;
+esac
 
 set +u  # module/conda scripts use unset variables
 module purge

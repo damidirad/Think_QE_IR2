@@ -1,0 +1,14 @@
+# Extension environment for Qwen3.8-27B (released Aug 2026, Qwen3.5 architecture).
+# vLLM 0.31.0 is the newest release that still supports Python 3.10, which keeps
+# pyserini 0.22.1 (Java 11) unchanged. It pulls torch 2.13 (CUDA 13; Snellius driver 615.71 / CUDA 13.4 is fine)
+# and transformers 5.x. Exact resolved versions are written to snellius/frozen_thinkqe_qwen38.txt.
+vllm==0.31.0
+pyserini==0.22.1
+faiss-cpu==1.9.0.post1
+openai
+pandas
+datasets
+accelerate
+scikit-learn
+nltk
+spacy

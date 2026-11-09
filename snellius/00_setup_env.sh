@@ -2,9 +2,11 @@
 # Run on a Snellius login node, from inside the repo:
 #   bash snellius/00_setup_env.sh          -> env "thinkqe_310"   (R1-14B, OpenThinker2, Phi-4-reasoning)
 #   bash snellius/00_setup_env.sh qwen3    -> env "thinkqe_qwen3" (Qwen3-8B / Qwen3-14B need newer vLLM)
+#   bash snellius/00_setup_env.sh qwen38   -> env "thinkqe_qwen38" (extension: Qwen3.8-27B, current vLLM)
 set -eo pipefail   # no -u: conda activate uses unset variables
 
 if [ "${1:-}" = "qwen3" ]; then ENV=thinkqe_qwen3; REQ=snellius/requirements_qwen3.txt
+elif [ "${1:-}" = "qwen38" ]; then ENV=thinkqe_qwen38; REQ=snellius/requirements_qwen38.txt
 else ENV=thinkqe_310; REQ=snellius/requirements_snellius.txt; fi
 
 module purge
@@ -28,5 +30,6 @@ conda deactivate && conda activate $ENV
 
 python -c "from pyserini.search.lucene import LuceneSearcher; print('pyserini OK')"
 python -c "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__)"
+pip freeze > "snellius/frozen_${ENV}.txt"   # exact versions, for the paper and the repro package
 pip cache purge || true
 echo "Environment $ENV ready."
