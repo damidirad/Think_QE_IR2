@@ -1,9 +1,9 @@
-pip install transformers==4.48.2
+transformers==4.48.2
 openai
 pandas
 datasets
 accelerate
-sklearn
+scikit-learn
 nltk
 pytrec_eval
 pyserini
