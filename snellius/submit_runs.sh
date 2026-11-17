@@ -11,7 +11,12 @@
 #   e.g.  BATCH=true SEED=1 bash snellius/submit_runs.sh deepseek-ai/DeepSeek-R1-Distill-Qwen-14B all
 # Slurm only bills time actually used, so the time limits below are generous on purpose.
 set -euo pipefail
-MODEL=${1:?usage: submit_runs.sh <hf_model_id> <all|dataset...>}; shift
+ENV_ARGS=()
+if [ "${1:-}" = --uv ]; then
+  ENV_ARGS=(--uv)
+  shift
+fi
+MODEL=${1:?usage: submit_runs.sh [--uv] <hf_model_id> <all|dataset...>}; shift
 BRIGHT=(biology earth_science economics psychology robotics stackoverflow sustainable_living)
 if [ "${1:-all}" = "all" ]; then DATASETS=(dl19 dl20 "${BRIGHT[@]}"); else DATASETS=("$@"); fi
 
@@ -23,6 +28,6 @@ for d in "${DATASETS[@]}"; do
   if [ -n "${EXTRA:-}" ] && [ -z "${ETAG:-}" ]; then echo "Set ETAG (a short label) when using EXTRA"; exit 1; fi
   MODEL=$MODEL BATCH=${BATCH:-false} SEED=${SEED:-0} EXTRA="${EXTRA:-}" ETAG="${ETAG:-}" sbatch --export=ALL --time=$T \
       --job-name="tqe_${d}_$(basename "$MODEL")${ETAG:+_$ETAG}$([ "${BATCH:-false}" = true ] && echo _b)_s${SEED:-0}" \
-      snellius/run_thinkqe.job "$d"
+      snellius/run_thinkqe.job "${ENV_ARGS[@]}" "$d"
 done
 squeue -u "$USER"

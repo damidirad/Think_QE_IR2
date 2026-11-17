@@ -7,6 +7,31 @@ export PYSERINI_CACHE=$WORK/pyserini_cache
 export MODEL=${MODEL:-deepseek-ai/DeepSeek-R1-Distill-Qwen-14B}   # model used in the paper
 mkdir -p "$WORK" "$HF_HOME" "$PYSERINI_CACHE"
 
+# Callers source this file without arguments so the leading flag is consumed
+# before they read their model or dataset arguments.
+if [ "${1:-}" = --uv ]; then
+  shift
+  repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  if [ ! -x "$repo_root/.venv/bin/python" ] || [ ! -r "$repo_root/.venv/bin/activate" ]; then
+    echo "ERROR: missing uv environment at $repo_root/.venv" >&2
+    return 1
+  fi
+
+  set +u  # module scripts use unset variables
+  module load 2023 Java/11.0.20
+  JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")
+  export JAVA_HOME
+  export JVM_PATH="$JAVA_HOME/lib/server/libjvm.so"
+  source "$repo_root/.venv/bin/activate"
+  set -u
+
+  case "$MODEL" in
+    *Qwen3.8*) export THINKQE_TEXT_ONLY=1 THINKQE_MAX_NUM_SEQS=256 VLLM_USE_FLASHINFER_SAMPLER=0 PYTHONFAULTHANDLER=1 ;;
+  esac
+  echo "Using $(command -v python) (uv)"
+  return 0
+fi
+
 # Qwen3 models need the newer environment
 case "$MODEL" in
   *R1-Distill*) CONDA_ENV=thinkqe_310 ;;

@@ -19,8 +19,8 @@
 #SBATCH --output=thinkqe_%x_%j.out
 
 set -euo pipefail
-DATASET=${1:?usage: sbatch snellius/run_thinkqe.job <dl19|dl20|bright_dataset>}
 source snellius/common.sh
+DATASET=${1:?usage: sbatch snellius/run_thinkqe.job [--uv] <dl19|dl20|bright_dataset>}
 
 # Everything was pre-downloaded by 01_download.sh
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1

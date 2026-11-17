@@ -9,6 +9,15 @@ All commands run from the repo root (`~/Think_QE_IR2`), with `snellius/` inside 
     bash snellius/01_download.sh             # BRIGHT data, MS MARCO index, 1.5B + 14B models
     sbatch snellius/02_index_bright.job      # BRIGHT Lucene indexes (CPU, ~minutes)
 
+To use an existing uv environment in the repo's `.venv`, pass `--uv` as the first
+argument to the script or job. Without the flag, the scripts activate Conda.
+
+    bash snellius/01_download.sh --uv
+    sbatch snellius/02_index_bright.job --uv
+    sbatch snellius/bm25_rm3.job --uv
+    sbatch snellius/run_thinkqe.job --uv dl19
+    bash snellius/submit_runs.sh --uv deepseek-ai/DeepSeek-R1-Distill-Qwen-14B all
+
 ## Batched generation (TA-approved)
     git apply snellius/batching.patch       # once; adds --batch_generation and --seed (default path unchanged)
     BATCH=true bash snellius/submit_runs.sh <model> all        # SEED=1, 2, ... for repeat runs
