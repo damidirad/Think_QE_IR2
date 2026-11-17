@@ -33,6 +33,16 @@ class TrecEvaluator(object):
             "recall@20": self.calc_trec_metric("-l 2 -m recall.20", qrels_name, trec_name, ) * 100,
         }
 
+    def predefined_browsecomp_trec(self, qrels_name, trec_name):
+        # Added for BrowseComp-Plus (binary qrels: evidence or gold documents)
+        return {
+            "ndcg@10": self.calc_trec_metric("-m ndcg_cut.10", qrels_name, trec_name, ) * 100,
+            "recall@5": self.calc_trec_metric("-m recall.5", qrels_name, trec_name, ) * 100,
+            "recall@10": self.calc_trec_metric("-m recall.10", qrels_name, trec_name, ) * 100,
+            "recall@100": self.calc_trec_metric("-m recall.100", qrels_name, trec_name, ) * 100,
+            "recall@1000": self.calc_trec_metric("-m recall.1000", qrels_name, trec_name, ) * 100,
+        }
+
     def predefined_bright_trec(self, qrels_name, trec_name):
         # Since there is no excluded_ids for the stackexchange domain, we do not filter the run files.
         return {
