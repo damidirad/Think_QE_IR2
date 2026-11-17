@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --job-name=check_trajectory
+#SBATCH --partition=rome
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=02:00:00
+#SBATCH --output=check_trajectory_%j.out
+# Runs snellius/check_trajectory.py on a compute node (large runs, e.g. BrowseComp-Plus, get killed on the login node).
+# Usage (from the repo root):
+#   MODEL=<hf_model_id> sbatch --export=ALL snellius/check_trajectory.job <run_dir> [check_trajectory.py args...]
+#   e.g. MODEL=deepseek-ai/DeepSeek-R1-0528-Qwen3-8B sbatch --export=ALL snellius/check_trajectory.job \
+#            $WORK/outputs/browsecomp_DeepSeek-R1-0528-Qwen3-8B__batched_s0 --slurm_log thinkqe_<job>.out
+# MODEL only selects the conda env (as in run_thinkqe.job); --export=ALL is needed to pass it on Snellius.
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+source snellius/common.sh
+python -u snellius/check_trajectory.py "$@"

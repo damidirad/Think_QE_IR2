@@ -1,0 +1,33 @@
+#!/bin/bash
+# Builds the BrowseComp-Plus Lucene index (CPU only), after snellius/prepare_browsecomp.py. From the repo root:
+#   sbatch snellius/index_browsecomp.job
+# index: same settings as the BRIGHT indexes (02_index_bright.job); --storeRaw is needed because thinkqe.py
+# shows the raw document text to the LLM.
+# index_lean: same documents and analyzer, only docids stored, for searching (run_thinkqe.job: --index index_lean
+# --text_index index). Same BM25 ranking; Lucene otherwise loads every hit's stored document (BM25's top hits here
+# average ~370K characters, so k=1000 took seconds per query). Existing indexes are kept.
+#SBATCH --job-name=browsecomp_index
+#SBATCH --partition=rome
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=03:00:00
+#SBATCH --output=browsecomp_index_%j.out
+
+set -euo pipefail
+MODEL=deepseek-ai/DeepSeek-R1-Distill-Qwen-14B   # only used to pick the thinkqe_310 env
+source snellius/common.sh
+D=/scratch-shared/$USER/browsecomp-plus/pyserini
+ls $D/index/segments_* >/dev/null 2>&1 || python -m pyserini.index.lucene \
+  --collection JsonCollection \
+  --input $D/corpus \
+  --index $D/index \
+  --generator DefaultLuceneDocumentGenerator \
+  --storePositions --storeDocvectors --storeRaw \
+  --threads $SLURM_CPUS_PER_TASK
+ls $D/index_lean/segments_* >/dev/null 2>&1 || python -m pyserini.index.lucene \
+  --collection JsonCollection \
+  --input $D/corpus \
+  --index $D/index_lean \
+  --generator DefaultLuceneDocumentGenerator \
+  --threads $SLURM_CPUS_PER_TASK
+du -sh $D/index $D/index_lean
