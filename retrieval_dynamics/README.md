@@ -86,3 +86,6 @@ The qrels contain relevance labels, not semantic embeddings.
 - `additional_embeddings.npz`: Vectors for retrieved documents not already present in the ground-truth embedding subset. Contains vectors for retrieved passages that were missing from the first embedding file.
 - `combined_embeddings.npz`: Ground-truth and additional vectors combined for semantic similarity analysis. Contains both groups of embeddings to compare the semantic similarity of retrieved passages across ThinkQE rounds.
 
+
+
+#Golden documents => relevance >=2
