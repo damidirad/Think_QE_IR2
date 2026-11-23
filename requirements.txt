@@ -9,3 +9,7 @@ pytrec_eval
 pyserini
 vllm
 setuptools==59.5.0
+
+# Analysis dependencies
+
+sentence-transformers==3.4.1
