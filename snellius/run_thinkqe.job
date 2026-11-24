@@ -6,6 +6,7 @@
 #                                                # psychology, robotics,
 #                                                # stackoverflow, sustainable_living
 # Different model:  MODEL=Qwen/Qwen3-8B sbatch snellius/run_thinkqe.job dl19
+# API model (LiteLLM proxy, CPU node): use submit_runs.sh litellm/Qwen3.6 ... (it sets the CPU partition)
 # (easier: bash snellius/submit_runs.sh <model> all)
 #
 # 1x H100 (94 GB) fits the 14B model with the 32k context the code requests.
@@ -35,6 +36,15 @@ ACCUMULATE=true
 case $DATASET in
   dl19) DATA_ARGS=(--index msmarco-v1-passage --topics dl19-passage --max_demo_len 128) ;;
   dl20) DATA_ARGS=(--index msmarco-v1-passage --topics dl20 --qrels dl20-passage --max_demo_len 128) ;;
+  browsecomp)   # BrowseComp-Plus (snellius/prepare_browsecomp.py + index_browsecomp.job). Plain-text data stays on scratch.
+        # Detected by "browsecomp" in --topics. Metrics during the run use the evidence qrels; gold qrels are scored
+        # at the end of this script. Documents are long (BM25's top hits average ~370K characters), so: search a
+        # docids-only index and read texts from the full one (--text_index), keep only the top 5 texts in memory
+        # (deeper ones are loaded if the filter needs them) and truncate by tokenising a prefix (--fast_truncate).
+        # None of the three changes the results.
+        BC=/scratch-shared/$USER/browsecomp-plus/pyserini
+        DATA_ARGS=(--index $BC/index_lean --text_index $BC/index --topics $BC/queries.tsv --qrels $BC/qrels_evidence.tsv
+                   --max_demo_len 512 --passage_text_depth 5 --fast_truncate true) ;;
   *)    # BRIGHT. NB: the code detects BRIGHT by the string "bright" in --topics,
         # so keep the data under ./bright/ as the README does.
         DATA_ARGS=(--index ./bright/data/pyserini_indexes/$DATASET
@@ -52,9 +62,13 @@ TAG=""; [ -n "$ETAG" ] && TAG="${ETAG}_"
 [ "$BATCH" = "true" ] && TAG="${TAG}batched_"
 { [ "$BATCH" = "true" ] || [ "$SEED" != "0" ] || [ -n "$ETAG" ]; } && TAG="__${TAG}s${SEED}"
 eval "EXTRA_ARR=($EXTRA)"   # keeps quoted values like --think_split "</think>" intact
+# EVAL_ARGS = logging-only thinkqe.py arguments; they do not change retrieval results, so no ETAG / folder change, e.g.
+#   EVAL_ARGS='--log_trajectory true --top_passages_format docids --top_passages_k 100'
+EVAL_ARGS=${EVAL_ARGS:-}
+eval "EVAL_ARR=($EVAL_ARGS)"
 OUT=$WORK/outputs/${DATASET}_$(basename "$MODEL")${TAG}
-echo "Dataset=$DATASET  Model=$MODEL  Batch=$BATCH  Seed=$SEED  Extra=[$EXTRA]  Output=$OUT"
-nvidia-smi
+echo "Dataset=$DATASET  Model=$MODEL  Batch=$BATCH  Seed=$SEED  Extra=[$EXTRA]  Eval=[$EVAL_ARGS]  Output=$OUT"
+nvidia-smi || true   # no GPU for litellm/<name> API models (CPU node)
 
 python thinkqe.py \
     --expansion_method thinkqe \
@@ -75,9 +89,24 @@ python thinkqe.py \
     --accumulate ${ACCUMULATE} \
     --batch_generation ${BATCH} \
     --seed ${SEED} \
-    ${EXTRA_ARR[@]+"${EXTRA_ARR[@]}"}
+    ${EXTRA_ARR[@]+"${EXTRA_ARR[@]}"} \
+    ${EVAL_ARR[@]+"${EVAL_ARR[@]}"}
 
 # Record the run's extra arguments (read by collect_results.py, e.g. --num_interaction 1)
 echo "$EXTRA" > "$OUT/extra_args.txt"
 echo "=== Final metrics ==="
 cat "$(ls "$OUT"/bm25-aug*_result_retrieval.trec.metrics.json | sort -V | tail -1)"
+
+if [ "$DATASET" = "browsecomp" ]; then
+  # Same metrics against the gold qrels (evidence documents that contain the answer), every round
+  python - "$OUT" "$BC/qrels_gold.tsv" <<'PY'
+import glob, json, sys
+from utils.eval_utils import TrecEvaluator
+out, qrels = sys.argv[1], sys.argv[2]
+ev = TrecEvaluator(sys.executable)
+for trec in sorted(glob.glob(f"{out}/bm25-aug*_result_retrieval.trec")):
+    m = ev.predefined_browsecomp_trec(qrels, trec)
+    json.dump(m, open(trec + ".metrics_gold.json", "w"))
+    print("gold", trec.split("/")[-1], json.dumps(m))
+PY
+fi

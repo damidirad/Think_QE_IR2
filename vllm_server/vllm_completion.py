@@ -48,14 +48,31 @@ class VLLMCompletion(object):
             **extra
         )
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        # Added for evaluation logging (--log_trajectory): the exact prompt strings and generation
+        # metadata of the most recent call, one entry per prompt. Return values are unchanged.
+        self.last_prompts = []
+        self.last_meta = []
+        self.verbose = True  # thinkqe.py --quiet_log true sets False: no per-call prompt prints
+
+    @staticmethod
+    def _meta(output):
+        return {
+            "prompt_tokens": len(output.prompt_token_ids or []),
+            "finish_reasons": [o.finish_reason for o in output.outputs],   # "stop" or "length" (hit max_tokens / context)
+            "completion_tokens": [len(o.token_ids) for o in output.outputs],
+        }
 
     def _generate(self, prompt, sampling_params):
-        outputs = self.engine.generate(prompt, sampling_params)
+        if self.verbose:
+            outputs = self.engine.generate(prompt, sampling_params)
+        else:  # quiet: no progress bar for every single-query call
+            outputs = self.engine.generate(prompt, sampling_params, use_tqdm=False)
 
         results = []
         for output in outputs:
             for generated_output in output.outputs:
                 results.append(generated_output.text)
+        self.last_meta = [self._meta(o) for o in outputs]
         return results
 
     def completion_chat_batch(self, messages_list, max_tokens=32768, temperature=1, top_p=1, n=2):
@@ -66,6 +83,8 @@ class VLLMCompletion(object):
         sampling_params = SamplingParams(max_tokens=max_tokens, temperature=temperature, top_p=top_p, n=n)
         prompts = [self._format_prompt(m) for m in messages_list]
         outputs = self.engine.generate(prompts, sampling_params)
+        self.last_prompts = prompts
+        self.last_meta = [self._meta(out) for out in outputs]
         return [[o.text for o in out.outputs] for out in outputs]
 
     def _apply_template(self, messages):
@@ -81,10 +100,12 @@ class VLLMCompletion(object):
         return base_message
 
     def completion_chat(self, messages, top_passages=None, max_tokens=32768, temperature=1, top_p=1, n=2):
-        print(f"args: max_tokens={max_tokens}, temperature={temperature}, top_p={top_p}, n={n}")
+        if self.verbose:
+            print(f"args: max_tokens={max_tokens}, temperature={temperature}, top_p={top_p}, n={n}")
         def parse_messages(messages):
             if self.control_thinking:
-                print('Adding no-thinking messages.')
+                if self.verbose:
+                    print('Adding no-thinking messages.')
                 base_message = self.tokenizer.decode(self.tokenizer.apply_chat_template(messages, add_generation_prompt=True))
                 return base_message + 'Okay, I think I have finished thinking.' + "\n</think>\n"
             else:
@@ -98,7 +119,9 @@ class VLLMCompletion(object):
         )
 
         prompt = parse_messages(messages)
-        print(f"INPUT TO the model: {prompt}")
+        self.last_prompts = [prompt]
+        if self.verbose:
+            print(f"INPUT TO the model: {prompt}")
         get_result = False
         while not get_result:
             try:

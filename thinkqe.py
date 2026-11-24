@@ -12,9 +12,7 @@ from pyserini.search import JDisjunctionMaxQueryGenerator
 from pyserini.search.lucene import LuceneImpactSearcher, LuceneSearcher
 from pyserini.search.lucene.reranker import ClassifierType, PseudoRelevanceClassifierReranker
 from pyserini.search import get_qrels, get_qrels_file
-from vllm_server.vllm_completion import VLLMCompletion
-
-import openai, json
+import json
 from utils.common import save_json, save_jsonl, load_json, file_exists
 
 from utils.eval_utils import TrecEvaluator
@@ -28,8 +26,29 @@ from prompts import get_prompt
 spacy_nlp = spacy.load("en_core_web_sm", disable=["tagger", "parser"])
 from utils.trec_utils import load_trec
 
+FAST_TRUNCATE = False  # added: --fast_truncate true (long documents, e.g. BrowseComp-Plus)
+
 def truncate_text(text, max_len=128):
+    if FAST_TRUNCATE:
+        return truncate_text_fast(text, max_len)
     return spacy_nlp(text)[:max_len].text[:(max_len * 10)]
+
+def truncate_text_fast(text, max_len=128):
+    """Added: same output as the original truncate_text, but only a prefix is tokenised, by the tokenizer alone
+    (the NER/lemmatizer components do not change tokens). The prefix ends where a whitespace run starts, after
+    the max_len * 10 character cap, so every token in it is the same as in the full text; the result is
+    text[:end of token max_len][:max_len * 10] either way. Avoids spaCy's 1M-character limit and the
+    pipeline's cost on 30K-1M character documents."""
+    limit = max_len * 10
+    cut = limit * 2
+    while cut < len(text):
+        p = cut
+        while p > limit and not (text[p].isspace() and not text[p - 1].isspace()):
+            p -= 1
+        if p > limit:
+            return spacy_nlp.tokenizer(text[:p])[:max_len].text[:limit]
+        cut *= 2  # no word boundary in (limit, cut]: look further
+    return spacy_nlp.tokenizer(text)[:max_len].text[:limit]
 
 def extract_key_sentences(response):
     pattern = r'"([^"]*)"'
@@ -39,11 +58,87 @@ def extract_key_sentences(response):
 
 THINK_SPLIT = "</think>\n"  # original behaviour; --think_split can override (added for the reproduction)
 
+VERBOSE = True  # added: --quiet_log true sets this False (no per-query prompts, traces, passage texts in stdout)
+
+def vprint(*args, **kwargs):
+    if VERBOSE:
+        print(*args, **kwargs)
+
 def extract_answer(response):
     return response.split(THINK_SPLIT)[-1]
 
 def extract_expansions(response_list):
     return [extract_answer(response) for response in response_list]
+
+
+def passage_text(raw, answer_key):
+    """Passage text of a hit, exactly as the original loop builds it from hit.raw."""
+    raw_df = json.loads(raw)
+    text_list = [raw_df[k] for k in answer_key.split("|") if raw_df[k]]
+    return "\t".join(text_list)
+
+
+PASSAGES_LOADED_ON_DEMAND = 0
+
+def passage_stream(texts, docids, searcher, answer_key):
+    """Added for --passage_text_depth: the kept texts, then texts of deeper hits loaded from the index
+    only if the filter gets that far (same stored raw document as hit.raw)."""
+    global PASSAGES_LOADED_ON_DEMAND
+    for i, docid in enumerate(docids):
+        if i < len(texts):
+            yield texts[i]
+        else:
+            PASSAGES_LOADED_ON_DEMAND += 1
+            yield passage_text(searcher.doc(docid).raw(), answer_key)
+
+
+# ---------- Evaluation logging (added; only active with --log_trajectory true) ----------
+def write_run_config(args, path):
+    """Everything needed to identify the run: arguments, code version, packages, Slurm job, env flags."""
+    import datetime, socket, subprocess, sys
+    from importlib import metadata
+    cfg = {"time": datetime.datetime.now().isoformat(timespec="seconds"), "host": socket.gethostname(),
+           "argv": sys.argv, "args": vars(args), "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+           "env": {k: v for k, v in os.environ.items()
+                   if k.startswith(("THINKQE_", "VLLM_", "CUDA_VISIBLE_DEVICES"))}}
+    repo = os.path.dirname(os.path.abspath(__file__))
+    try:
+        cfg["git_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True,
+                                                    stderr=subprocess.DEVNULL).strip()
+        cfg["git_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
+                                                        cwd=repo, text=True, stderr=subprocess.DEVNULL).strip())
+    except Exception:
+        cfg["git_commit"] = cfg["git_dirty"] = None
+    versions = {}
+    for pkg in ("vllm", "torch", "transformers", "pyserini", "openai"):
+        try:
+            versions[pkg] = metadata.version(pkg)
+        except Exception:
+            versions[pkg] = None
+    cfg["versions"] = versions
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(cfg, fp, indent=2, default=str)
+
+
+def write_trajectory(trajectory, path):
+    """One JSON line per query. Rewritten after every round (atomically), so a run that hits the
+    time limit still has all completed rounds."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fp:
+        for rec in trajectory.values():
+            fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def log_generation(rec, prompt, meta, response_list):
+    """Store one round's LLM call in a trajectory round record."""
+    rec["prompt"] = prompt                         # exact string sent to vLLM (chat template applied)
+    rec["prompt_tokens"] = meta.get("prompt_tokens")
+    rec["responses"] = response_list               # raw generations, incl. the reasoning trace
+    rec["finish_reasons"] = meta.get("finish_reasons")
+    rec["completion_tokens"] = meta.get("completion_tokens")
+    rec["think_split_found"] = [THINK_SPLIT in r for r in response_list]
+    rec["expansions"] = extract_expansions(response_list)   # this round's new expansions only
 
 class LuceneSearchInterface(object):
     def __init__(self, args):
@@ -341,32 +436,32 @@ def build_expansion_messages(query, top_passages, max_demo_len=None, expansion_m
     top_passages_str = "\n".join([f"{idx+1}. {psg}" for idx, psg in enumerate(top_passages)])
 
     user_prompt = get_prompt(expansion_method, query, top_passages_str)
-    print(f"using {expansion_method} for query expansion")
+    vprint(f"using {expansion_method} for query expansion")
     messages = [
     {"role": "user", "content": user_prompt},
 
     ]
-    print("Input message:" + user_prompt)
+    vprint("Input message:" + user_prompt)
     return messages
 
 
 def finalize_query_rewrite(query, response_list, reqeat_weight=None,
                            accumulated_query_expansions=None, accumulate=False, topic_id=None):
     """Turn generated responses into the new query, unchanged from the original progressive_query_rewrite."""
-    print("*" * 100 + "\nR1 trace:\n")    
-    print(response_list)
-    print("\n" + "*" * 100 + "\n")
+    vprint("*" * 100 + "\nR1 trace:\n")    
+    vprint(response_list)
+    vprint("\n" + "*" * 100 + "\n")
     query_expansions = extract_expansions(response_list)
-    print(f"Query expansions: {query_expansions}")
+    vprint(f"Query expansions: {query_expansions}")
     if accumulate:
-        print(f"Accumulating query expansions.")
+        vprint(f"Accumulating query expansions.")
         accumulated_query_expansions[topic_id].extend(query_expansions)
         query_expansions = accumulated_query_expansions[topic_id]
 
     if reqeat_weight:
         q_repeat = int(len("\n".join(query_expansions).split()) / (len(query.split()) * reqeat_weight))
         q_repeat = max(q_repeat, 1) # at least 1
-        print(f"Query repetition times: {q_repeat}")
+        vprint(f"Query repetition times: {q_repeat}")
     else:
         q_repeat = q_repeat
     new_list = [query] * q_repeat + query_expansions
@@ -435,7 +530,10 @@ def main():
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save outputs")
     parser.add_argument('--overwrite_output_dir', action='store_true', help="Overwrite existing output dir")
     parser.add_argument("--openai_api_key", type=str, default="none")
-    parser.add_argument("--generation_model", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    parser.add_argument("--generation_model", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+                        help="HF model for local vLLM, or litellm/<name> for a LiteLLM proxy (e.g. litellm/Qwen3.6)")
+    parser.add_argument("--api_base", type=str, default="https://llmproxy.uva.nl/v1",
+                        help="LiteLLM proxy URL for litellm/<name> models (key: $LITELLM_API_KEY or api_token in .env)")
     parser.add_argument("--answer_key", type=str, default="contents")
     parser.add_argument("--keep_passage_num", type=int, default=10, help="Number of passages kept for CSQE")
     parser.add_argument('--write_top_passages', action='store_true', help="Save the top retrieved passages")
@@ -453,6 +551,31 @@ def main():
     parser.add_argument('--batch_generation', type=lambda x: x.lower() == 'true', default=False, help="Generate all queries of a round in one vLLM call (added for the reproduction; default off = original behaviour)")
     parser.add_argument('--think_split', type=str, default="</think>\n", help="String after which the answer starts (added for the reproduction; default = original behaviour)")
     parser.add_argument('--seed', type=int, default=0, help="vLLM engine seed (added for the reproduction; 0 = vLLM 0.7.x default)")
+    # Evaluation logging (added; defaults = original behaviour and output files)
+    parser.add_argument('--log_trajectory', type=lambda x: x.lower() == 'true', default=False,
+                        help="Write <output_dir>/trajectory.jsonl (per query and round: BM25 query, docids shown to the LLM, "
+                             "skipped docids, prompt, raw generations with finish reason and token counts, expansions, "
+                             "top docids with scores) and <output_dir>/run_config.json")
+    parser.add_argument('--trajectory_top_k', type=int, default=100,
+                        help="Top docids (with scores) per round stored in trajectory.jsonl; the full ranking stays in the .trec file")
+    parser.add_argument('--top_passages_format', choices=["text", "docids"], default="text",
+                        help="What --write_top_passages saves per query: full passage texts (original) or only docids")
+    parser.add_argument('--top_passages_k', type=int, default=0,
+                        help="With --write_top_passages, save only the top k per query (0 = all hits, original)")
+    parser.add_argument('--quiet_log', type=lambda x: x.lower() == 'true', default=False,
+                        help="Do not print per-query prompts, reasoning traces, expansions and blacklisted passage texts "
+                             "(they are in trajectory.jsonl with --log_trajectory true); print one summary line per round instead")
+    parser.add_argument('--passage_text_depth', type=int, default=0,
+                        help="Keep the texts of only the top N hits per query in memory (0 = all hits, original). The .trec "
+                             "files keep all --hits. If the redundancy filter reads deeper than N, the texts are loaded "
+                             "from the index on demand, so results are identical for any N.")
+    parser.add_argument('--text_index', type=str, default=None,
+                        help="Index to read passage texts from by docid (default: the hits' stored raw text, original). "
+                             "Lets --index be a docids-only copy of the same collection (fast search, same ranking); "
+                             "use with --passage_text_depth")
+    parser.add_argument('--fast_truncate', type=lambda x: x.lower() == 'true', default=False,
+                        help="Truncate passages (--max_demo_len) by tokenising only a prefix with the spaCy tokenizer; "
+                             "same text as the original, needed for very long documents (BrowseComp-Plus)")
     args = parser.parse_args()
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and not args.overwrite_output_dir:
@@ -463,10 +586,27 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)  # Create output directory if needed
 
+    if args.log_trajectory:
+        write_run_config(args, os.path.join(args.output_dir, "run_config.json"))
+
     # generation model
-    global THINK_SPLIT
+    global THINK_SPLIT, VERBOSE, FAST_TRUNCATE
     THINK_SPLIT = args.think_split
-    openai_api = VLLMCompletion(model_name=args.generation_model, control_thinking=args.no_thinking, seed=args.seed)
+    FAST_TRUNCATE = args.fast_truncate
+    VERBOSE = not args.quiet_log
+    if args.generation_model.startswith("litellm/"):
+        # API extension: model served by a LiteLLM proxy, e.g. litellm/Qwen3.6 (no local GPU needed)
+        if "browsecomp" in args.topics and os.environ.get("THINKQE_ALLOW_API_BROWSECOMP") != "1":
+            # BrowseComp-Plus queries/documents must stay off the web (README_SNELLIUS.md); prompts would leave Snellius
+            raise SystemExit("Refusing to send BrowseComp-Plus data to an API. "
+                             "Set THINKQE_ALLOW_API_BROWSECOMP=1 only if its terms allow this proxy.")
+        from vllm_server.litellm_completion import LiteLLMCompletion
+        openai_api = LiteLLMCompletion(model_name=args.generation_model, api_base=args.api_base,
+                                       control_thinking=args.no_thinking, seed=args.seed)
+    else:
+        from vllm_server.vllm_completion import VLLMCompletion
+        openai_api = VLLMCompletion(model_name=args.generation_model, control_thinking=args.no_thinking, seed=args.seed)
+    openai_api.verbose = VERBOSE
 
     # query data
     query_iterator = get_query_iterator(args.topics, TopicsFormat(args.topics_format))
@@ -475,6 +615,10 @@ def main():
         use_bright = True
     else:
         use_bright = False
+    # added: BrowseComp-Plus uses the BRIGHT code path (local topics/qrels files), with its own metrics
+    use_browsecomp = "browsecomp" in args.topics
+    if use_browsecomp:
+        use_bright = True
 
     if use_bright:
         qrels_name = args.qrels
@@ -487,6 +631,9 @@ def main():
 
     # my own api
     search_api = LuceneSearchInterface(args)
+    # added: --text_index, passage texts come from this index by docid (--index is then a docids-only index, which
+    # gives the same BM25 ranking without loading every hit's stored document)
+    text_searcher = LuceneSearcher(args.text_index) if args.text_index else None
     trec_eval = TrecEvaluator(args.trec_python_path)
 
     # round 1 - regular bm25
@@ -499,6 +646,10 @@ def main():
     seen_passages = {}
     last_top_k_passages = {}  # Track passages from the previous round
     last_last_top_k_passages = {}  # Track passages from two rounds ago
+    last_top_docids = dict()  # added: qid -> docids, parallel to last_top_passages (for logging only)
+    trajectory = {qid: {"query_id": qid, "query": q, "rounds": []} for qid, q in org_qid_query_list} \
+        if args.log_trajectory else None
+    trajectory_path = os.path.join(args.output_dir, "trajectory.jsonl")
 
     for index, (topic_id, query) in enumerate(tqdm(org_qid_query_list, total=len(org_qid_query_list))):
         accumulated_query_expansions[topic_id] = []
@@ -510,44 +661,63 @@ def main():
     round_num = args.num_interaction + 1
     for ridx in range(round_num):
         output_path_bm25 = os.path.join(args.output_dir, f'bm25-aug{ridx}_result_retrieval.trec')
+        round_recs = {qid: {"round": ridx} for qid, _ in org_qid_query_list} if args.log_trajectory else None
         if flag_gen_aug:
             # # data generation
             aug_qid_query_list = []
             qid2responses = dict()
             pending = []  # (topic_id, query, messages), used when --batch_generation is on
+            n_skipped = n_shown = 0  # added: for the --quiet_log round summary
 
             for index, (topic_id, query) in enumerate(tqdm(org_qid_query_list, total=len(org_qid_query_list))):
                 # Get top passages but filter out previously seen ones
                 all_passages = last_top_passages[topic_id]
+                all_docids = last_top_docids[topic_id]  # added (logging): docid of each passage
                 filtered_passages = []
-                
+                filtered_docids, skipped = [], []  # added (logging)
+
                 if args.use_passage_filter:
-                    
-                    for passage in all_passages:
+
+                    passage_iter = all_passages if args.passage_text_depth <= 0 else \
+                        passage_stream(all_passages, all_docids, text_searcher or search_api.searcher, args.answer_key)
+                    for pidx, passage in enumerate(passage_iter):
                         # Skip if already in our blacklist
                         if passage in seen_passages[topic_id]:
-                            print(f"Already in blacklist: passage {passage}")
+                            vprint(f"Already in blacklist: passage {passage}")
+                            skipped.append({"docid": all_docids[pidx], "rank": pidx + 1, "reason": "blacklisted"})
                             continue
-                            
+
                         # If passage was in top results from two rounds ago, consider discarding it
                         if passage in last_last_top_k_passages[topic_id]:
                             seen_passages[topic_id].add(passage)  # Add to blacklist
-                            print(f"Adding to blacklist: passage {passage} already seen in previous round")
+                            vprint(f"Adding to blacklist: passage {passage} already seen in previous round")
+                            skipped.append({"docid": all_docids[pidx], "rank": pidx + 1,
+                                            "reason": "top_k_two_rounds_ago (added to blacklist)"})
                             continue
-                            
+
                         # If we reach here, passage is new and not being discarded
                         filtered_passages.append(passage)
-                        
+                        filtered_docids.append(all_docids[pidx])
+
                         # Break if we have enough new passages
                         if len(filtered_passages) >= args.keep_passage_num:
                             break
-                    
+
                     # If we don't have enough new passages, we can use fewer
                     top_passages = filtered_passages[:args.keep_passage_num]
+                    top_docids = filtered_docids[:args.keep_passage_num]
                 else:
                     # If filtering is disabled, just use the top passages directly
                     top_passages = all_passages[:args.keep_passage_num]
-                
+                    top_docids = all_docids[:args.keep_passage_num]
+
+                n_skipped += len(skipped)
+                n_shown += len(top_docids)
+                if args.log_trajectory:
+                    rec = round_recs[topic_id]
+                    rec["llm_input_docids"] = top_docids   # the documents the LLM read, in prompt order
+                    rec["skipped_by_filter"] = skipped
+
                 if args.batch_generation:
                     # Batched mode: only build the prompt now; generate for all queries after the loop
                     pending.append((topic_id, query, build_expansion_messages(
@@ -565,25 +735,37 @@ def main():
                     topic_id=topic_id
                 )
                 aug_qid_query_list.append((topic_id, query_aug))
-                print(topic_id, "|||", query_aug)
+                vprint(topic_id, "|||", query_aug)
 
                 qid2responses[topic_id] = response_list
+                if args.log_trajectory:
+                    log_generation(round_recs[topic_id], openai_api.last_prompts[0],
+                                   openai_api.last_meta[0], response_list)
 
             if args.batch_generation:
                 # One vLLM call for every query in this round
                 all_responses = openai_api.completion_chat_batch(
                     [m for _, _, m in pending], n=args.gen_num,
                     temperature=args.temperature, max_tokens=args.max_tokens)
-                for (topic_id, query, _), response_list in zip(pending, all_responses):
+                for pi, ((topic_id, query, _), response_list) in enumerate(zip(pending, all_responses)):
                     query_aug, accumulated_query_expansions = finalize_query_rewrite(
                         query, response_list, args.reqeat_weight,
                         accumulated_query_expansions, args.accumulate, topic_id)
                     aug_qid_query_list.append((topic_id, query_aug))
-                    print(topic_id, "|||", query_aug)
+                    vprint(topic_id, "|||", query_aug)
                     qid2responses[topic_id] = response_list
+                    if args.log_trajectory:
+                        log_generation(round_recs[topic_id], openai_api.last_prompts[pi],
+                                       openai_api.last_meta[pi], response_list)
 
             save_json(qid2responses, output_path_bm25 + ".responses.json")
             iter_org_qid_query_list = aug_qid_query_list
+            if not VERBOSE:
+                gens = [r for rl in qid2responses.values() for r in rl]
+                print(f"Round {ridx}: {len(qid2responses)} queries, {len(gens)} generations "
+                      f"({sum(THINK_SPLIT not in r for r in gens)} without the think split), "
+                      f"{n_shown} passages shown to the LLM, {n_skipped} skipped by the filter"
+                      + (f", {PASSAGES_LOADED_ON_DEMAND} texts loaded on demand so far" if args.passage_text_depth > 0 else ""))
     
         # save query
         save_jsonl(iter_org_qid_query_list, output_path_bm25 + ".topics.jsonl")
@@ -593,16 +775,26 @@ def main():
             'w', max_hits=args.hits, tag='Anserini', topics=query_iterator.topics, use_max_passage=args.max_passage,
             max_passage_delimiter=args.max_passage_delimiter, max_passage_hits=args.max_passage_hits)
 
+        bm25_queries = dict(iter_org_qid_query_list) if args.log_trajectory else None
         with output_writer:
             for topic_id, hits in search_iterator(args, search_api, iter_org_qid_query_list):
                 output_writer.write(topic_id, hits)
                 # save passage result
                 passages = []
-                for hit in hits:
-                    raw_df = json.loads(hit.raw)
-                    text_list = [raw_df[k] for k in args.answer_key.split("|") if raw_df[k]]
-                    passages.append("\t".join(text_list))
+                # (at least keep_passage_num texts: the filter's top-K sets below are built from them)
+                for hit in (hits[:max(args.passage_text_depth, args.keep_passage_num)]
+                            if args.passage_text_depth > 0 else hits):
+                    raw = hit.raw if text_searcher is None else text_searcher.doc(hit.docid).raw()
+                    if raw is None:
+                        raise ValueError(f"no stored text for {hit.docid}: an index without --storeRaw needs --text_index")
+                    passages.append(passage_text(raw, args.answer_key))
                 last_top_passages[topic_id] = passages
+                last_top_docids[topic_id] = [hit.docid.strip() for hit in hits]
+                if args.log_trajectory:
+                    rec = round_recs[topic_id]
+                    rec["bm25_query"] = bm25_queries[topic_id]
+                    rec["top_docids"] = [hit.docid.strip() for hit in hits[:args.trajectory_top_k]]
+                    rec["top_scores"] = [round(float(hit.score), 4) for hit in hits[:args.trajectory_top_k]]
 
                 # Update passage history at the end of each round
                 if flag_gen_aug:
@@ -616,20 +808,40 @@ def main():
 
         # save top passages
         if args.write_top_passages:
-            save_json(last_top_passages, output_path_bm25 + "top-psgs.json")
+            if args.top_passages_format == "text" and args.top_passages_k <= 0:
+                top_psgs = last_top_passages  # original behaviour
+            else:
+                src = last_top_passages if args.top_passages_format == "text" else last_top_docids
+                k = args.top_passages_k if args.top_passages_k > 0 else None
+                top_psgs = {qid: v[:k] for qid, v in src.items()}
+            save_json(top_psgs, output_path_bm25 + "top-psgs.json")
 
-        if use_bright:
+        if use_browsecomp:
+            result_metrics = trec_eval.predefined_browsecomp_trec(qrels_name, output_path_bm25)
+        elif use_bright:
             result_metrics = trec_eval.predefined_bright_trec(qrels_name, output_path_bm25)
         else:
             result_metrics = trec_eval.predefined_msmarco_trec(qrels_name, output_path_bm25)
         save_json(result_metrics, output_path_bm25 + ".metrics.json")
         print(f"At round {ridx}: {json.dumps(result_metrics)}")
 
+        if args.log_trajectory:
+            for qid, rec in round_recs.items():
+                trajectory[qid]["rounds"].append(rec)
+            write_trajectory(trajectory, trajectory_path)
+
         flag_gen_aug = True
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BaseException:
+        # added: on an error, exit at once; otherwise the vLLM engine process can keep the job alive until the time limit
+        import sys, traceback
+        traceback.print_exc()
+        sys.stdout.flush(); sys.stderr.flush()
+        os._exit(1)
 
 
 
