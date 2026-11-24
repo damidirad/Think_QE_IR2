@@ -327,6 +327,10 @@ class LuceneSearchInterface(object):
                     batch_topics, pseudo_batch_topic_ids, num_hits, num_thread,
                     query_generator=self.query_generator, fields=self.fields
                 )
+            missing = [id_ for id_ in pseudo_batch_topic_ids if id_ not in results]
+            if missing:   # batch_search drops queries whose Java search threw (see the Java stack trace above)
+                raise RuntimeError(f"batch_search returned no result for {len(missing)} queries (batch positions "
+                                   f"{missing[:5]}); e.g. Lucene TooManyClauses for very long queries")
             results = [results[id_] for id_ in pseudo_batch_topic_ids]
         return results
 
@@ -490,9 +494,10 @@ def progressive_query_rewrite(
 
 
 def main():
-    # # Add this line to set max clause count
-    # JBooleanQuery = autoclass('org.apache.lucene.search.BooleanQuery')
-    # JBooleanQuery.setMaxClauseCount(16384)  # or higher number as needed
+    # Raise Lucene's clause limit (default 1024, one clause per unique query term). Accumulated expansions of
+    # long-answer models (Qwen3.6 on BRIGHT) exceed it in round 3; pyserini's batch_search then silently drops the
+    # query. Queries under 1024 terms are unaffected, so earlier results do not change. (Was commented out here.)
+    autoclass('org.apache.lucene.search.IndexSearcher').setMaxClauseCount(16384)
 
     JLuceneSearcher = autoclass('io.anserini.search.SimpleSearcher')
     parser = argparse.ArgumentParser(description='Search a Lucene index.')
@@ -618,6 +623,10 @@ def main():
     # added: BrowseComp-Plus uses the BRIGHT code path (local topics/qrels files), with its own metrics
     use_browsecomp = "browsecomp" in args.topics
     if use_browsecomp:
+        use_bright = True
+    # added: CoverageBench (e.g. CRUX) also uses the local-files path; --qrels are its nugget qrels
+    use_coverage = "coveragebench" in args.topics
+    if use_coverage:
         use_bright = True
 
     if use_bright:
@@ -818,6 +827,8 @@ def main():
 
         if use_browsecomp:
             result_metrics = trec_eval.predefined_browsecomp_trec(qrels_name, output_path_bm25)
+        elif use_coverage:
+            result_metrics = trec_eval.predefined_coverage(qrels_name, output_path_bm25)
         elif use_bright:
             result_metrics = trec_eval.predefined_bright_trec(qrels_name, output_path_bm25)
         else:

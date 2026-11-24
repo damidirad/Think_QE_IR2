@@ -1,0 +1,22 @@
+#!/bin/bash
+# Lucene index for CoverageBench CRUX (565K passages, a few minutes). After snellius/prepare_crux.sh, from the repo root:
+#   sbatch snellius/index_crux.job          (add --uv as first argument for the uv environment)
+# Then the BM25 check against the paper:  python snellius/coverage_eval.py bm25-check
+#SBATCH --job-name=crux_index
+#SBATCH --partition=genoa
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=01:00:00
+#SBATCH --output=crux_index_%j.out
+
+set -euo pipefail
+source snellius/common.sh "$@"
+D=coveragebench/data
+python -m pyserini.index.lucene \
+  --collection JsonCollection \
+  --input $D/pyserini_corpus/crux \
+  --index $D/pyserini_indexes/crux \
+  --generator DefaultLuceneDocumentGenerator \
+  --storePositions --storeDocvectors --storeRaw \
+  --threads $SLURM_CPUS_PER_TASK
+python snellius/coverage_eval.py bm25-check

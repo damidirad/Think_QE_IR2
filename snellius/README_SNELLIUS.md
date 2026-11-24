@@ -72,6 +72,43 @@ the reasoning separately and it is put back as `<reasoning>\n</think>\n\n<answer
 Every request spends proxy credits: smoke-test with `EXTRA='--num_interaction 1' ETAG=r1` and watch the
 "LiteLLM usage so far" lines in the log. Refuses BrowseComp-Plus (its data must stay off the web).
 
+## RAG answer evaluation (extension, BRIGHT StackExchange domains)
+`snellius/rag_eval.py` asks an LLM to answer each BRIGHT query from the top-5 documents of a run's final round
+and scores the answer against BRIGHT's `gold_answer` (the accepted StackExchange answer): Exact Match, token F1
+(FlashRAG/SQuAD definitions), BERTScore F1 (roberta-large, raw and rescaled) and an LLM judge (BRIGHT's 0-100
+"% of the reference content" rubric). Two answer prompts: `short` (FlashRAG default, answer only) and `long`
+(BRIGHT's QA prompt, detailed answer). Answers: Qwen3.6, judge: gpt-oss-120b, both on the UvA proxy.
+TREC DL has no reference answers, so it is not supported. One-time: `pip install bert-score==0.3.13` in
+`thinkqe_qwen3` and download `FacebookAI/roberta-large` to `$HF_HOME` (login node; jobs run offline).
+
+    sbatch snellius/rag_eval.job $WORK/outputs/{biology,earth_science,economics,psychology,robotics,stackoverflow,sustainable_living}_Qwen3.6__batched_s0
+    python snellius/rag_eval.py summary $WORK/outputs/*_Qwen3.6__batched_s0      # table per domain + macro-average
+    python snellius/rag_eval.py run <run_dir> --round 0 --limit 5                # pilot on the BM25 ranking
+
+Baselines (same answer model, prompts and judge; pass the same run dirs):
+
+    sbatch snellius/rag_eval.job <run dirs> -- --round 0    # BM25 top-5, no expansion  -> rag_eval_r0_k5/
+    sbatch snellius/rag_eval.job <run dirs> -- --k 0        # closed book, no documents  -> rag_eval_closedbook/
+    python snellius/rag_eval.py summary <run dirs> --sub rag_eval_closedbook       # or rag_eval_r0_k5
+
+Outputs per run: `rag_eval_final_k5/` with prompts, answers (incl. reasoning), judge texts, `per_query.tsv`,
+`metrics.json`. EM is ~0 by construction (gold answers are 80-250 words); F1, BERTScore and the judge carry
+the signal. API responses are cached in `$WORK/api_cache/`, so reruns only send missing requests.
+
+## CoverageBench CRUX (extension: information coverage)
+CoverageBench (arXiv 2603.20034, `hltcoe/coveragebench`, Apache-2.0) links each topic's nuggets (sub-questions) to the
+documents that support them, so a ranking can be scored on *coverage*: alpha-nDCG@20 and subtopic recall@20, besides
+nDCG@20. We use its CRUX part: MultiNews (100 topics) and DUC04 (50), report-style requests over one 565K-passage
+news corpus (`DylanJHJ/crux-mds-corpus`). Once (login node, then a ~1 min CPU job):
+    bash snellius/prepare_crux.sh            # -> coveragebench/data/ (corpus, topics, nugget qrels, nuggets, paper runs)
+    sbatch snellius/index_crux.job           # Lucene index + BM25 check: reproduces the paper's BM25 run exactly
+Run and evaluate (dataset names `crux_multinews`, `crux_duc04`; detected by "coveragebench" in --topics):
+    CHAIN=true BATCH=true EVAL_ARGS='--log_trajectory true --top_passages_format docids --top_passages_k 100' \
+        bash snellius/submit_runs.sh litellm/Qwen3.6 crux_multinews crux_duc04
+    python snellius/coverage_eval.py rounds $WORK/outputs/crux_*_Qwen3.6__batched_s0   # per round + paper baselines
+Metrics (`utils/coverage_metrics.py`) reproduce all numbers the paper reports for its released runs. nDCG is binary
+(relevant = supports >= 1 nugget); alpha = 0.5. Upstream swaps the two `rank1_qwen3.run` files; `prepare_crux.sh` fixes it.
+
 Monitor: `squeue -u $USER`; logs are `thinkqe_tqe_<dataset>_<model>_<jobid>.out` in the repo root.
 Outputs: `/scratch-shared/$USER/thinkqe/outputs/<dataset>_<model>/` (cleaned after ~14 days unused; copy what you keep).
 

@@ -43,6 +43,12 @@ class TrecEvaluator(object):
             "recall@1000": self.calc_trec_metric("-m recall.1000", qrels_name, trec_name, ) * 100,
         }
 
+    def predefined_coverage(self, nugget_qrels_name, trec_name):
+        # Added for CoverageBench (nugget qrels "qid nugget docid rel"); see utils/coverage_metrics.py
+        from utils.coverage_metrics import evaluate
+        m = evaluate(trec_name, nugget_qrels_name)
+        return {k: v * 100 for k, v in m.items() if k not in ("n", "n_in_run")}
+
     def predefined_bright_trec(self, qrels_name, trec_name):
         # Since there is no excluded_ids for the stackexchange domain, we do not filter the run files.
         return {

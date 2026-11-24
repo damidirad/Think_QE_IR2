@@ -45,6 +45,11 @@ case $DATASET in
         BC=/scratch-shared/$USER/browsecomp-plus/pyserini
         DATA_ARGS=(--index $BC/index_lean --text_index $BC/index --topics $BC/queries.tsv --qrels $BC/qrels_evidence.tsv
                    --max_demo_len 512 --passage_text_depth 5 --fast_truncate true) ;;
+  crux_multinews|crux_duc04)   # CoverageBench CRUX (snellius/prepare_crux.sh + index_crux.job). Detected by
+        # "coveragebench" in --topics; --qrels are the nugget qrels, metrics per round from utils/coverage_metrics.py
+        CB=./coveragebench/data
+        DATA_ARGS=(--index $CB/pyserini_indexes/crux --topics $CB/pyserini_queries/$DATASET.tsv
+                   --qrels $CB/nugget_qrels/$DATASET.qrels --max_demo_len 512) ;;
   *)    # BRIGHT. NB: the code detects BRIGHT by the string "bright" in --topics,
         # so keep the data under ./bright/ as the README does.
         DATA_ARGS=(--index ./bright/data/pyserini_indexes/$DATASET
@@ -109,4 +114,9 @@ for trec in sorted(glob.glob(f"{out}/bm25-aug*_result_retrieval.trec")):
     json.dump(m, open(trec + ".metrics_gold.json", "w"))
     print("gold", trec.split("/")[-1], json.dumps(m))
 PY
+fi
+
+if [[ "$DATASET" == crux_* ]]; then
+  # Per-round coverage table (nDCG@10/20, alpha-nDCG@20, subtopic recall@20, R@100) next to the paper's baselines
+  python snellius/coverage_eval.py rounds "$OUT" --write
 fi

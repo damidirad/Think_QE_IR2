@@ -1,0 +1,34 @@
+#!/bin/bash
+# RAG answer evaluation of finished ThinkQE BRIGHT runs (snellius/rag_eval.py) on a CPU node: answers and judge
+# run on the UvA LiteLLM proxy, only BERTScore (roberta-large) runs locally. From the repo root:
+#   sbatch snellius/rag_eval.job $WORK/outputs/biology_Qwen3.6__batched_s0 [more run dirs ...] [-- rag_eval.py run args]
+#   e.g. all 7 domains, final round, top-5 (the defaults):
+#   sbatch snellius/rag_eval.job $WORK/outputs/{biology,earth_science,economics,psychology,robotics,stackoverflow,sustainable_living}_Qwen3.6__batched_s0
+# Run dirs are evaluated one after another (one at a time on the rate-limited proxy); API responses are cached,
+# so a resubmitted job only sends what is missing. Afterwards: python snellius/rag_eval.py summary <run dirs>
+#SBATCH --job-name=rag_eval
+#SBATCH --partition=genoa
+#SBATCH --cpus-per-task=16
+#SBATCH --time=12:00:00
+#SBATCH --output=rag_eval_%j.out
+
+set -euo pipefail
+cd "$SLURM_SUBMIT_DIR"
+export MODEL=${MODEL:-litellm/Qwen3.6}   # selects the conda env (thinkqe_qwen3: openai, bert-score)
+source snellius/common.sh
+export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+
+DIRS=(); ARGS=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--" ]; then shift; ARGS=("$@"); break; fi
+  DIRS+=("$1"); shift
+done
+[ ${#DIRS[@]} -gt 0 ] || { echo "usage: sbatch snellius/rag_eval.job <run_dir>... [-- rag_eval.py args]"; exit 1; }
+
+FAILED=()
+for d in "${DIRS[@]}"; do
+  echo "=== $d"
+  python -u snellius/rag_eval.py run "$d" ${ARGS[@]+"${ARGS[@]}"} || FAILED+=("$d")   # next dir even if one fails
+done
+[ ${#FAILED[@]} -eq 0 ] || echo "FAILED: ${FAILED[*]}"
+python snellius/rag_eval.py summary "${DIRS[@]}" || true

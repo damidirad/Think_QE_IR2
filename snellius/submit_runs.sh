@@ -16,6 +16,8 @@
 #   Model litellm/<name> (e.g. litellm/Qwen3.6): generation via the UvA LiteLLM proxy, job on a CPU node
 #                        (genoa; PARTITION overrides). Key: api_token in .env or $LITELLM_API_KEY.
 #                        Costs proxy credits: smoke-test first, e.g. EXTRA='--num_interaction 1' ETAG=r1
+#   CHAIN=true   submit the datasets as a dependency chain (one job at a time), e.g. for the rate-limited proxy:
+#                CHAIN=true BATCH=true bash snellius/submit_runs.sh litellm/Qwen3.6 biology economics ...
 # Slurm only bills time actually used, so the time limits below are generous on purpose.
 set -euo pipefail
 ENV_ARGS=()
@@ -36,8 +38,12 @@ for d in "${DATASETS[@]}"; do
   # API models (litellm/<name>): generation runs on the proxy, so a CPU node is enough (only BM25 runs locally)
   RES=(${PARTITION:+--partition=$PARTITION})
   case $MODEL in litellm/*) RES=(--partition=${PARTITION:-genoa} --gpus=0 --cpus-per-task=16) ;; esac
-  MODEL=$MODEL BATCH=${BATCH:-false} SEED=${SEED:-0} EXTRA="${EXTRA:-}" ETAG="${ETAG:-}" EVAL_ARGS="${EVAL_ARGS:-}" sbatch --export=ALL --time=$T ${RES[@]+"${RES[@]}"} \
+  # CHAIN=true: each job starts after the previous one ended (one dataset at a time on a rate-limited API)
+  DEP=(); [ "${CHAIN:-false}" = true ] && [ -n "${PREV:-}" ] && DEP=(--dependency=afterany:$PREV)
+  PREV=$(MODEL=$MODEL BATCH=${BATCH:-false} SEED=${SEED:-0} EXTRA="${EXTRA:-}" ETAG="${ETAG:-}" EVAL_ARGS="${EVAL_ARGS:-}" sbatch --parsable --export=ALL --time=$T ${RES[@]+"${RES[@]}"} ${DEP[@]+"${DEP[@]}"} \
       --job-name="tqe_${d}_$(basename "$MODEL")${ETAG:+_$ETAG}$([ "${BATCH:-false}" = true ] && echo _b)_s${SEED:-0}" \
-      snellius/run_thinkqe.job "${ENV_ARGS[@]}" "$d"
+      snellius/run_thinkqe.job ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$d")
+  PREV=${PREV%%;*}
+  echo "Submitted batch job $PREV ($d)${DEP[@]+ after ${DEP[0]#--dependency=afterany:}}"
 done
 squeue -u "$USER"

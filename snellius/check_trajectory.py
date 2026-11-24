@@ -61,23 +61,29 @@ resp = [None] + [json.load(open(f"{D}/bm25-aug{r}_result_retrieval.trec.response
 from pyserini.search.lucene import LuceneSearcher
 _tidx = args.get("text_index") or args["index"]  # --text_index: texts come from there
 searcher = LuceneSearcher(_tidx) if os.path.exists(_tidx) else LuceneSearcher.from_prebuilt_index(_tidx)
-_text_cache = {}
+import hashlib
 def text_of(docid):
-    if docid not in _text_cache:
-        raw = json.loads(searcher.doc(docid).raw())
-        _text_cache[docid] = "\t".join(raw[k] for k in args["answer_key"].split("|") if raw[k])
-    return _text_cache[docid]
+    raw = json.loads(searcher.doc(docid).raw())
+    return "\t".join(raw[k] for k in args["answer_key"].split("|") if raw[k])
+_key_cache = {}
+def key_of(docid):
+    # the filter compares passage texts; a hash of the text keeps memory small on long documents (BrowseComp-Plus)
+    if docid not in _key_cache:
+        _key_cache[docid] = hashlib.sha1(text_of(docid).encode()).digest()
+    return _key_cache[docid]
 import spacy
 nlp = spacy.load("en_core_web_sm", disable=["tagger", "parser"])
 def truncate(t, n):
     # the original method; over spaCy's 1M-character limit (BrowseComp-Plus) the tokenizer on the full text (the
     # pipeline does not change tokens), so --fast_truncate's prefix cut is still checked independently
-    if len(t) <= nlp.max_length:
+    # Long texts: the tokenizer alone on the full text (same tokens, but no NER on ~10^5-10^7 characters)
+    if len(t) <= 100_000:
         return nlp(t)[:n].text[:(n * 10)]
     return nlp.tokenizer(t)[:n].text[:(n * 10)]
 
 stats = defaultdict(int)
-for t in traj:
+for qi, t in enumerate(traj):
+    if qi and qi % 50 == 0: print(f"  checked {qi}/{len(traj)} queries", flush=True)
     q, query, rounds = t["query_id"], t["query"], t["rounds"]
     qs = str(q)   # .trec / responses.json keys are strings; query_id may be an int (DL19/DL20)
     if len(rounds) != R: err("rounds", f"{q}: {len(rounds)} rounds"); continue
@@ -96,7 +102,7 @@ for t in traj:
             exp_in, exp_skip = [], []
             if args["use_passage_filter"]:
                 for i, d in enumerate(prev):
-                    p = text_of(d)
+                    p = key_of(d)
                     if p in seen:
                         exp_skip.append((d, "blacklisted")); continue
                     if p in last_last_k:
@@ -139,7 +145,7 @@ for t in traj:
             err("rounds", f"{q} r0 keys {sorted(rec)}")
         # advance filter state exactly like thinkqe.py does after each search
         if r > 0: last_last_k = last_k
-        last_k = {text_of(d) for d in rec["top_docids"][:K]}
+        last_k = {key_of(d) for d in rec["top_docids"][:K]}
 
 # ---------- top-psgs.json ----------
 if args["write_top_passages"]:

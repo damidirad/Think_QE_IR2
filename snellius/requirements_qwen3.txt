@@ -10,3 +10,4 @@ accelerate
 scikit-learn
 nltk
 spacy
+bert-score==0.3.13   # RAG answer evaluation (snellius/rag_eval.py)
